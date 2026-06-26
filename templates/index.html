@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Trackpad</title>
+    <style>
+        * { margin: 0; padding: 0; }
+        body {
+            background: black;
+            overflow: hidden;
+            touch-action: none;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #fullscreen-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: 2px solid white;
+            padding: 20px 40px;
+            font-size: 24px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        #fullscreen-btn:hover {
+            background: rgba(255,255,255,0.4);
+        }
+        #status {
+            color: white;
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-family: sans-serif;
+            font-size: 14px;
+            opacity: 0.5;
+        }
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <button id="fullscreen-btn">Fullscreen</button>
+    <div id="status">Connected to PC</div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const btn = document.getElementById('fullscreen-btn');
+        const statusDiv = document.getElementById('status');
+        let isFullscreen = false;
+        let socket = io();
+
+        function isFullscreenMode() {
+            return document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+        }
+
+        function toggleFullscreen() {
+            if (!isFullscreenMode()) {
+                const el = document.documentElement;
+                if (el.requestFullscreen) el.requestFullscreen();
+                else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+                else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
+                else if (el.msRequestFullscreen) el.msRequestFullscreen();
+                btn.textContent = 'Minimize';
+                statusDiv.classList.add('hidden');
+                isFullscreen = true;
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
+                else if (document.msExitFullscreen) document.msExitFullscreen();
+                btn.textContent = 'Fullscreen';
+                statusDiv.classList.remove('hidden');
+                isFullscreen = false;
+            }
+        }
+
+        btn.addEventListener('click', toggleFullscreen);
+
+        document.addEventListener('fullscreenchange', updateButton);
+        document.addEventListener('webkitfullscreenchange', updateButton);
+        document.addEventListener('mozfullscreenchange', updateButton);
+        document.addEventListener('MSFullscreenChange', updateButton);
+
+        function updateButton() {
+            if (isFullscreenMode()) {
+                btn.textContent = 'Minimize';
+                statusDiv.classList.add('hidden');
+                isFullscreen = true;
+            } else {
+                btn.textContent = 'Fullscreen';
+                statusDiv.classList.remove('hidden');
+                isFullscreen = false;
+            }
+        }
+
+        // ---------- ट्रैकपैड लॉजिक ----------
+        let lastTouchX = 0, lastTouchY = 0;
+        let touchStartTime = 0;
+        let touchStartPos = {x:0, y:0};
+        let touchMoved = false;
+        let twoFingerTouch = false;
+        let lastPinchDist = 0;
+
+        document.addEventListener('touchstart', (e) => {
+            if (!isFullscreenMode()) return;
+            e.preventDefault();
+            const touches = e.touches;
+            if (touches.length === 1) {
+                const touch = touches[0];
+                touchStartPos.x = touch.clientX;
+                touchStartPos.y = touch.clientY;
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+                touchStartTime = Date.now();
+                touchMoved = false;
+                twoFingerTouch = false;
+            } else if (touches.length === 2) {
+                twoFingerTouch = true;
+                const t1 = touches[0], t2 = touches[1];
+                const dx = t1.clientX - t2.clientX;
+                const dy = t1.clientY - t2.clientY;
+                lastPinchDist = Math.sqrt(dx*dx + dy*dy);
+            }
+        }, {passive: false});
+
+        document.addEventListener('touchmove', (e) => {
+            if (!isFullscreenMode()) return;
+            e.preventDefault();
+            const touches = e.touches;
+            if (touches.length === 1 && !twoFingerTouch) {
+                const touch = touches[0];
+                const dx = touch.clientX - lastTouchX;
+                const dy = touch.clientY - lastTouchY;
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) touchMoved = true;
+                if (dx !== 0 || dy !== 0) {
+                    const sensitivity = 1.0;
+                    socket.emit('mouse_move', { dx: dx * sensitivity, dy: dy * sensitivity });
+                }
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+            } else if (touches.length === 2 && twoFingerTouch) {
+                const t1 = touches[0], t2 = touches[1];
+                const dx = t1.clientX - t2.clientX;
+                const dy = t1.clientY - t2.clientY;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                const delta = dist - lastPinchDist;
+                if (Math.abs(delta) > 5) {
+                    socket.emit('mouse_scroll', { delta: -delta * 0.5 });
+                    lastPinchDist = dist;
+                }
+            }
+        }, {passive: false});
+
+        document.addEventListener('touchend', (e) => {
+            if (!isFullscreenMode()) return;
+            e.preventDefault();
+            const touches = e.touches;
+            if (touches.length === 0 && !twoFingerTouch) {
+                if (!touchMoved && (Date.now() - touchStartTime) < 300) {
+                    socket.emit('mouse_click', { button: 'left' });
+                }
+                twoFingerTouch = false;
+            } else if (touches.length === 1 && twoFingerTouch) {
+                twoFingerTouch = false;
+                const touch = touches[0];
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+            }
+        }, {passive: false});
+
+        document.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            twoFingerTouch = false;
+        }, {passive: false});
+    </script>
+</body>
+</html>
